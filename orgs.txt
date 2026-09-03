@@ -1,0 +1,4 @@
+# One Azure DevOps organization name per line (the {org} in https://dev.azure.com/{org})
+contoso-eng
+contoso-platform
+your-org-name

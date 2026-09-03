@@ -1,0 +1,31 @@
+# Example configuration for ado-build-minutes.
+# Copy to config.toml and edit. Do not put secrets in this file.
+
+orgs = [
+  "contoso-eng",
+  "contoso-platform",
+  "contoso-retail",
+  "contoso-stores",
+  "contoso-cloud",
+  "contoso-data",
+  "contoso-mobile",
+  "contoso-security",
+  "contoso-ops",
+  "contoso-shared",
+  "your-org-name",
+]
+
+# Replace the placeholder organizations above with the Azure DevOps orgs
+# in your estate.
+concurrency = 6
+user_agent = "ado-build-minutes/0.1 (+https://github.com/vicperdana/ado-build-minutes)"
+
+[actions_cost_rates]
+# User-supplied estimates only. Verify against current GitHub billing docs.
+linux_per_minute = 0.008
+windows_per_minute = 0.016
+macos_per_minute = 0.08
+linux_multiplier = 1
+windows_multiplier = 2
+macos_multiplier = 10
+self_hosted_per_minute = 0.0

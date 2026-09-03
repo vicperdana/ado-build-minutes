@@ -1,0 +1,38 @@
+[build-system]
+requires = []
+build-backend = "build_backend"
+backend-path = ["."]
+
+[project]
+name = "ado-build-minutes"
+version = "0.1.0"
+description = "Extract Azure DevOps build minutes by runner type across organisations"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Vic Perdana" }]
+dependencies = []
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: System Administrators",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Software Development :: Build Tools",
+]
+
+[project.optional-dependencies]
+runtime = [
+  "azure-identity>=1.16,<2",
+  "httpx>=0.27,<1",
+  "rich>=13,<15",
+]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.23,<1"]
+
+[project.scripts]
+ado-build-minutes = "ado_build_minutes.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
