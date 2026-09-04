@@ -100,7 +100,7 @@ The PAT is read only from `AZURE_DEVOPS_EXT_PAT`; there is no CLI token flag and
 
 | Source | Required permissions | Notes |
 |---|---|---|
-| `analytics` / `ParallelPipelineJobsSnapshot` | Access to project Analytics, usually available to Basic users with project access | Cheapest headline numbers. |
+| `analytics` / `ParallelPipelineJobsSnapshot` | Access to project Analytics, usually available to Basic users with project access | Parallel-job entitlement only; not a minutes source. |
 | `analytics` / `TaskAgentRequestSnapshots` | **Project Collection Administrator** | Required for pool-consumption snapshot entities; 403 is reported per org/project and does not stop other orgs. |
 | `jobrequests` | Agent pool read access; project/pipeline visibility improves attribution | Semi-documented endpoint; recent window only. |
 | `timeline` | Build read access per project plus pool/queue read access | Authoritative but one timeline request per build. |
@@ -175,10 +175,11 @@ ado-build-minutes run --config config.toml --source timeline --start 2026-01-01 
 
 Headline source selection is role-based, not a blind priority list:
 
-- `analytics_parallel` is the default headline source. It covers the requested date range cheaply, but its runner split is hosted vs non-hosted only.
+- `analytics_taskagent_slots` is the default headline source. It provides pool-classified job-slot-minutes from `TaskAgentRequestSnapshots` aggregated as `MaxCount × 10`; it measures occupied concurrency rather than unique jobs, so it reports 0 jobs. It requires Project Collection Administrator.
 - `jobrequests` is enrichment/reconciliation data for recent per-job image/OS/pool detail. It is a headline source only when explicitly run by itself and only if every requested org is covered.
-- `timeline` is an authoritative headline candidate only when coverage is complete; it is expensive and resumable.
-- `analytics_taskagent_slots` provides pool-classified 10-minute slot/concurrency detail from `TaskAgentRequestSnapshots`; it is not a unique job count.
+- `timeline` is an authoritative headline candidate only when coverage is complete; it is expensive and resumable. It is preferred over `analytics_taskagent_slots` when both are complete.
+- `analytics_parallel_capacity` reports the parallel-job entitlement from `ParallelPipelineJobsSnapshot`. It is **capacity, never minutes**, and is structurally excluded from headline selection.
+- `billing` is a current billing-period cross-check only and is never a requested-range headline.
 - `billing` is a current billing-period cross-check only and is never a requested-range headline.
 
 A source must have complete per-org coverage and no source-level failures before it becomes the headline. If coverage is partial or mixed, the Markdown summary emits a prominent **MIXED PROVENANCE / INCOMPLETE COVERAGE** warning, lists source provenance by org, and intentionally does not show a clean combined total.
@@ -187,11 +188,13 @@ A source must have complete per-org coverage and no source-level failures before
 
 | Source | Fidelity | Cost | Retention / window | Runner type | Hosted image | When to use |
 |---|---:|---:|---|---|---|---|
-| `analytics` `ParallelPipelineJobsSnapshot` | Medium headline | Low | Analytics retention | Hosted vs non-hosted only | No | Default fast requested-range headline. |
-| `analytics` `TaskAgentRequestSnapshots` | Job-slot-minutes, pool-level | Medium | ~30 days | PoolId classified via pool metadata | No | Pool consumption / concurrency view; PCA required; `MaxCount` is max concurrent slots per 10-minute interval, not unique jobs. |
+| `analytics` `ParallelPipelineJobsSnapshot` | Capacity only | Low | Analytics retention | Hosted vs non-hosted entitlement | No | Parallel-job entitlement and the monthly hosted free-minute grant. **Not a minutes source** — see the warning below. |
+| `analytics` `TaskAgentRequestSnapshots` | Job-slot-minutes, pool-level | Medium | ~30 days | PoolId classified via pool metadata | No | Default headline; pool consumption / concurrency view; PCA required; `MaxCount` is max concurrent slots per 10-minute interval, not unique jobs. |
 | `jobrequests` | Per job | Low/medium | Undocumented recent window, commonly ~30 days | Pool ID | **Yes** | Recent image and pipeline breakdown. |
 | `timeline` | Highest | Very high | Build retention | Queue → pool | No | Authoritative deep historical attribution. |
 | `billing` | Hosted current-period counter | Low | Current billing period only | Hosted only | No | Ground-truth cross-check only; unsupported endpoint; variance percentage shown only if the billing period aligns with the requested range. |
+
+> **`ParallelPipelineJobsSnapshot` is not a usage table.** Each row records the parallel-job *entitlement* in force at a sampling time: `TotalCount` is the number of licensed parallel job slots for a `ParallelismTag` (for example `1` hosted private, or `100000` for effectively unlimited public), and `TotalMinutes` is the fixed monthly Microsoft-hosted free-minute grant (typically `1800`). Both are constants re-sampled many times per day, so summing them multiplies a capacity constant by the snapshot count and produces large fictitious totals. The tool aggregates these with `max`, reports them as `analytics_parallel_capacity` with 0 minutes and 0 jobs, and structurally excludes them from headline selection.
 
 ## CLI reference
 
@@ -254,7 +257,7 @@ Generated CSV/JSON/out/state files are ignored by git.
 # Azure DevOps build minutes summary
 
 Reporting window: 2026-08-01 to 2026-08-31
-Primary source: analytics_parallel
+Primary source: analytics_taskagent_slots
 
 | Runner type | Minutes | Hours | Jobs |
 |---|---:|---:|---:|

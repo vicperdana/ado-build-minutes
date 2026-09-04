@@ -2,13 +2,15 @@ import asyncio
 from datetime import datetime, timezone
 
 from ado_build_minutes.analytics import (
+    PARALLEL_CAPACITY_SOURCE,
+    _collect_parallel_capacity,
     _collect_task_agent_snapshots,
     date_to_sk,
-    parallel_snapshot_apply,
+    parallel_capacity_apply,
     task_agent_apply,
     task_agent_slot_minutes,
 )
-from ado_build_minutes.classify import VMSS_ELASTIC_POOL
+from ado_build_minutes.classify import CAPACITY_NOT_MINUTES, VMSS_ELASTIC_POOL
 from ado_build_minutes.models import PoolInfo
 
 
@@ -16,6 +18,18 @@ class FakeODataClient:
     async def get_json(self, url, params=None):
         return {
             "value": [{"SamplingTime": "2026-08-01T00:00:00Z", "IsHosted": False, "PoolId": 99, "MaxCount": 2}],
+        }, {}
+
+
+class FakeParallelCapacityClient:
+    """Returns the entitlement rows ParallelPipelineJobsSnapshot actually produces."""
+
+    async def get_json(self, url, params=None):
+        return {
+            "value": [
+                {"IsHosted": True, "ParallelismTag": "Private", "MaxParallelJobs": 1, "MaxFreeMinutesGrant": 1800},
+                {"IsHosted": False, "ParallelismTag": "Public", "MaxParallelJobs": 100000, "MaxFreeMinutesGrant": None},
+            ],
         }, {}
 
 
@@ -40,11 +54,39 @@ def test_task_agent_odata_query_preserves_safe_aggregation():
     assert "aggregate(Count with max as MaxCount)" in query
 
 
-def test_parallel_odata_query_uses_inclusive_daily_bounds():
-    query = parallel_snapshot_apply(datetime(2026, 8, 1, tzinfo=timezone.utc), datetime(2026, 8, 31, tzinfo=timezone.utc))
+def test_parallel_capacity_query_aggregates_entitlement_with_max_not_sum():
+    query = parallel_capacity_apply(datetime(2026, 8, 1, tzinfo=timezone.utc), datetime(2026, 8, 31, tzinfo=timezone.utc))
 
     assert "SamplingDate ge 2026-08-01Z" in query
     assert "SamplingDate le 2026-08-31Z" in query
+    # Summing a re-sampled capacity constant multiplies it by the snapshot count.
+    assert "with sum as" not in query
+    assert "TotalCount with max as MaxParallelJobs" in query
+    assert "TotalMinutes with max as MaxFreeMinutesGrant" in query
+    # SamplingDate must not be a groupby key, or each snapshot becomes its own row.
+    assert "groupby((IsHosted,ParallelismTag)" in query
+
+
+def test_parallel_snapshot_entitlement_never_contributes_minutes_or_jobs():
+    records = asyncio.run(
+        _collect_parallel_capacity(
+            FakeParallelCapacityClient(),
+            "org",
+            "project",
+            datetime(2026, 8, 1, tzinfo=timezone.utc),
+            datetime(2026, 8, 31, tzinfo=timezone.utc),
+            [],
+        )
+    )
+
+    assert len(records) == 2
+    # The 1800-minute hosted grant and the 100000 public slot count are capacity, not usage.
+    assert all(record.minutes == 0.0 for record in records)
+    assert all(record.jobs == 0.0 for record in records)
+    assert all(record.runner_type == CAPACITY_NOT_MINUTES for record in records)
+    assert all(record.source == PARALLEL_CAPACITY_SOURCE for record in records)
+    assert records[0].extra["hosted_free_minutes_grant"] == 1800
+    assert records[1].extra["parallel_jobs_granted"] == 100000
 
 
 def test_task_agent_rows_are_classified_with_pool_metadata_and_slots_not_jobs():

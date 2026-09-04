@@ -31,9 +31,9 @@ except ImportError:  # pragma: no cover - fallback is for dependency-free help/t
             return "\n".join(lines)
 
 from .auth import AuthProvider
-from .analytics import ODATA_VERSION, parallel_snapshot_apply, task_agent_apply
+from .analytics import ODATA_VERSION, parallel_capacity_apply, task_agent_apply
 from .http import AdoHttpError, AzureDevOpsHttpClient
-from .pools import API_VERSION, list_projects
+from .pools import API_VERSION, CONNECTION_DATA_API_VERSION, DATA_PROVIDER_API_VERSION, list_projects
 
 
 @dataclass
@@ -102,7 +102,10 @@ async def run_doctor(
             rows.append(row)
             continue
         try:
-            await client.get_json(f"https://dev.azure.com/{org}/_apis/connectionData", params={"api-version": API_VERSION})
+            await client.get_json(
+                f"https://dev.azure.com/{org}/_apis/connectionData",
+                params={"api-version": CONNECTION_DATA_API_VERSION},
+            )
             row.org_reachability = "PASS"
         except AdoHttpError as exc:
             row.org_reachability = _status(False, f"HTTP {exc.status_code}")
@@ -137,7 +140,7 @@ async def run_doctor(
                 end = datetime.now(timezone.utc)
                 start = end - timedelta(days=1)
                 for project_name in sample_projects:
-                    parallel_url = _odata_probe_url(org, project_name, "ParallelPipelineJobsSnapshot", parallel_snapshot_apply(start, end))
+                    parallel_url = _odata_probe_url(org, project_name, "ParallelPipelineJobsSnapshot", parallel_capacity_apply(start, end))
                     taskagent_url = _odata_probe_url(org, project_name, "TaskAgentRequestSnapshots", task_agent_apply(start, end), "SamplingTime asc")
                     parallel_statuses.append(await _probe_get(client, parallel_url))
                     taskagent_statuses.append(await _probe_get(client, taskagent_url))
@@ -173,7 +176,11 @@ async def run_doctor(
             billing_statuses = []
             try:
                 payload = {"contributionIds": ["ms.vss-build-web.build-queue-hub-data-provider"], "dataProviderContext": {"properties": {}}}
-                await client.post_json(f"https://dev.azure.com/{org}/_apis/Contribution/dataProviders/query", payload=payload)
+                await client.post_json(
+                    f"https://dev.azure.com/{org}/_apis/Contribution/dataProviders/query",
+                    payload=payload,
+                    params={"api-version": DATA_PROVIDER_API_VERSION},
+                )
             except AdoHttpError as exc:
                 billing_statuses.append(_status(False, f"data-provider HTTP {exc.status_code}"))
             else:

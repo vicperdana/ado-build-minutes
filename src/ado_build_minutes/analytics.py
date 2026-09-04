@@ -7,12 +7,13 @@ from datetime import date, datetime
 from typing import Any
 from urllib.parse import quote
 
-from .classify import MICROSOFT_HOSTED, SELF_HOSTED, UNKNOWN
+from .classify import CAPACITY_NOT_MINUTES, UNKNOWN
 from .http import AdoHttpError, AzureDevOpsHttpClient
 from .models import CollectionResult, Failure, PoolInfo, UsageRecord, month_key
 from .pools import fetch_pools, list_projects
 
 ODATA_VERSION = "v4.0-preview"
+PARALLEL_CAPACITY_SOURCE = "analytics_parallel_capacity"
 
 
 def date_to_sk(value: date | datetime) -> int:
@@ -41,14 +42,24 @@ def _odata_url(org: str, project: str, entity: str, apply: str, orderby: str | N
     return f"https://analytics.dev.azure.com/{org}/{project}/_odata/{ODATA_VERSION}/{entity}?{query}"
 
 
-def parallel_snapshot_apply(start: datetime, end: datetime) -> str:
-    """Return the ParallelPipelineJobsSnapshot OData aggregation."""
+def parallel_capacity_apply(start: datetime, end: datetime) -> str:
+    """Return the ParallelPipelineJobsSnapshot parallel-job entitlement aggregation.
+
+    ParallelPipelineJobsSnapshot describes the parallel-job *entitlement* in force at
+    each sampling time, not consumed build minutes. ``TotalCount`` is the number of
+    licensed parallel job slots for a ``ParallelismTag`` (for example 1 hosted private
+    slot, or 100000 for effectively unlimited public slots) and ``TotalMinutes`` is the
+    fixed monthly Microsoft-hosted free-minute grant (typically 1800). Both are
+    constants that are re-sampled many times per day, so a ``sum`` multiplies a capacity
+    constant by the number of snapshots taken. Aggregate with ``max`` instead to recover
+    the entitlement that applied during the window.
+    """
     start_s = start.date().isoformat()
     end_s = end.date().isoformat()
     return (
         f"filter(SamplingDate ge {start_s}Z and SamplingDate le {end_s}Z)"
-        "/groupby((SamplingDate,IsHosted,ParallelismTag),"
-        "aggregate(TotalMinutes with sum as TotalBuildMinutes,TotalCount with sum as TotalJobCount))"
+        "/groupby((IsHosted,ParallelismTag),"
+        "aggregate(TotalCount with max as MaxParallelJobs,TotalMinutes with max as MaxFreeMinutesGrant))"
     )
 
 
@@ -86,11 +97,7 @@ async def _odata_rows(client: AzureDevOpsHttpClient, url: str, warnings: list[st
     return rows
 
 
-def _runner_from_is_hosted(value: Any) -> str:
-    return MICROSOFT_HOSTED if value is True or str(value).lower() == "true" else SELF_HOSTED
-
-
-async def _collect_parallel_snapshot(
+async def _collect_parallel_capacity(
     client: AzureDevOpsHttpClient,
     org: str,
     project: str,
@@ -98,24 +105,36 @@ async def _collect_parallel_snapshot(
     end: datetime,
     warnings: list[str],
 ) -> list[UsageRecord]:
-    apply = parallel_snapshot_apply(start, end)
+    """Collect parallel-job entitlement from ParallelPipelineJobsSnapshot.
+
+    These records are capacity metadata only. They deliberately carry 0 minutes and 0
+    jobs so they can never be mistaken for, or aggregated into, consumed build minutes.
+    """
+    apply = parallel_capacity_apply(start, end)
     rows = await _odata_rows(client, _odata_url(org, project, "ParallelPipelineJobsSnapshot", apply), warnings)
     records: list[UsageRecord] = []
     for row in rows:
-        sampling_date = row.get("SamplingDate")
         records.append(
             UsageRecord(
-                source="analytics_parallel",
+                source=PARALLEL_CAPACITY_SOURCE,
                 org=org,
                 project=project,
-                runner_type=_runner_from_is_hosted(row.get("IsHosted")),
-                minutes=float(row.get("TotalBuildMinutes") or 0),
-                jobs=float(row.get("TotalJobCount") or 0),
-                month=month_key(str(sampling_date) if sampling_date else start),
+                runner_type=CAPACITY_NOT_MINUTES,
+                minutes=0.0,
+                jobs=0.0,
                 parallelism_tag=row.get("ParallelismTag"),
-                granularity="hosted_vs_non_hosted_daily_aggregate",
-                extra={"headline_scope": "hosted_vs_non_hosted_only"},
+                granularity="parallel_job_entitlement",
+                extra={
+                    "parallel_jobs_granted": row.get("MaxParallelJobs"),
+                    "hosted_free_minutes_grant": row.get("MaxFreeMinutesGrant"),
+                    "is_hosted": row.get("IsHosted"),
+                },
             )
+        )
+    if rows:
+        warnings.append(
+            f"{org}/{project}: ParallelPipelineJobsSnapshot reports parallel-job entitlement (licensed slots and the "
+            "monthly hosted free-minute grant), not consumed minutes; it contributes 0 minutes to headline totals."
         )
     return records
 
@@ -191,9 +210,9 @@ async def collect_analytics(
             warnings: list[str] = []
             failures: list[Failure] = []
             try:
-                records.extend(await _collect_parallel_snapshot(client, org, project, start, end, warnings))
+                records.extend(await _collect_parallel_capacity(client, org, project, start, end, warnings))
             except AdoHttpError as exc:
-                failures.append(Failure("analytics_parallel", org, project, exc.status_code, exc.body or str(exc)))
+                failures.append(Failure(PARALLEL_CAPACITY_SOURCE, org, project, exc.status_code, exc.body or str(exc)))
             try:
                 records.extend(await _collect_task_agent_snapshots(client, org, project, start, end, warnings, pools))
             except AdoHttpError as exc:
@@ -207,7 +226,7 @@ async def collect_analytics(
             return records, warnings, failures
 
         project_results = await asyncio.gather(*(collect_project(project_entry) for project_entry in projects))
-        result.mark_source_covered("analytics_parallel", org)
+        result.mark_source_covered(PARALLEL_CAPACITY_SOURCE, org)
         result.mark_source_covered("analytics_taskagent_slots", org)
         for records, warnings, failures in project_results:
             result.records.extend(records)

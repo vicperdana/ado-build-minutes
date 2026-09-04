@@ -182,9 +182,9 @@ class AzureDevOpsHttpClient:
             return {}, response.headers
         return response.json(), response.headers
 
-    async def post_json(self, url: str, *, payload: Any) -> tuple[Any, httpx.Headers]:
+    async def post_json(self, url: str, *, payload: Any, params: dict[str, Any] | None = None) -> tuple[Any, httpx.Headers]:
         """POST JSON and return the decoded body plus response headers."""
-        response = await self.request("POST", url, json=payload, headers={"Content-Type": "application/json"})
+        response = await self.request("POST", url, params=params, json=payload, headers={"Content-Type": "application/json"})
         if not response.content:
             return {}, response.headers
         return response.json(), response.headers

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from .classify import MICROSOFT_HOSTED
+from .classify import CAPACITY_NOT_MINUTES, MICROSOFT_HOSTED
 from .http import AdoHttpError, AzureDevOpsHttpClient
 from .models import CollectionResult, Failure, UsageRecord
-from .pools import API_VERSION
+from .pools import DATA_PROVIDER_API_VERSION
 
 
 def ci_get(mapping: Any, key: str) -> Any:
@@ -40,7 +40,11 @@ async def collect_billing(client: AzureDevOpsHttpClient, orgs: list[str]) -> Col
     for org in orgs:
         url = f"https://dev.azure.com/{org}/_apis/Contribution/dataProviders/query"
         try:
-            body, _ = await client.post_json(url, payload=payload | {"dataProviderContext": {"properties": {}}})
+            body, _ = await client.post_json(
+                url,
+                payload=payload | {"dataProviderContext": {"properties": {}}},
+                params={"api-version": DATA_PROVIDER_API_VERSION},
+            )
             result.mark_source_covered("billing_unsupported", org)
             counters = extract_billing_minutes(body if isinstance(body, dict) else {})
             used = counters.get("hosted_used")
@@ -69,7 +73,7 @@ async def collect_billing(client: AzureDevOpsHttpClient, orgs: list[str]) -> Col
                 UsageRecord(
                     source="billing_resourceusage_capacity",
                     org=org,
-                    runner_type="capacity_not_minutes",
+                    runner_type=CAPACITY_NOT_MINUTES,
                     minutes=0.0,
                     jobs=0,
                     granularity="capacity_snapshot",
