@@ -10,6 +10,14 @@ from .models import PoolInfo
 
 API_VERSION = "7.1"
 
+# connectionData is preview-only. Requesting it with a plain "7.1" api-version returns
+# HTTP 400 ("The requested version ... is under preview. The -preview flag must be
+# supplied in the api-version for such requests").
+CONNECTION_DATA_API_VERSION = "7.1-preview.1"
+
+# The Contribution data-provider query endpoint rejects POSTs that omit an api-version.
+DATA_PROVIDER_API_VERSION = "7.1-preview.1"
+
 
 async def list_projects(client: AzureDevOpsHttpClient, org: str) -> list[dict[str, Any]]:
     """List well-formed projects in an Azure DevOps organisation."""

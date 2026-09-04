@@ -15,6 +15,11 @@ MANAGED_DEVOPS_POOL = "managed_devops_pool"
 SELF_HOSTED = "self_hosted"
 UNKNOWN = "unknown"
 
+# Pseudo runner type for records that describe licensed capacity/entitlement rather
+# than consumed build minutes. Records using it must always report 0 minutes and 0
+# jobs so they can never leak into headline usage totals.
+CAPACITY_NOT_MINUTES = "capacity_not_minutes"
+
 
 def _options_contains_elastic_pool(options: Any) -> bool:
     if options is None:

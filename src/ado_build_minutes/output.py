@@ -11,26 +11,30 @@ from typing import Any, Iterable
 from .classify import GITHUB_HOSTED, MICROSOFT_HOSTED, UNKNOWN
 from .models import CollectionResult, Failure, UsageRecord
 
-HEADLINE_SOURCE_ORDER = ["analytics_parallel", "timeline"]
+HEADLINE_SOURCE_ORDER = ["timeline", "analytics_taskagent_slots"]
 EXPLICIT_HEADLINE_SOURCE_MAP = {
-    "analytics": "analytics_parallel",
-    "analytics_parallel": "analytics_parallel",
+    "analytics": "analytics_taskagent_slots",
+    "analytics_taskagent_slots": "analytics_taskagent_slots",
     "timeline": "timeline",
     "jobrequests": "jobrequests",
 }
 SOURCE_ROLES = {
-    "analytics_parallel": "default headline hosted-vs-non-hosted total",
-    "analytics_taskagent_slots": "pool-level slot/concurrency detail; not a headline source",
+    "analytics_parallel_capacity": "parallel-job entitlement and hosted free-minute grant; capacity, never minutes",
+    "analytics_taskagent_slots": "default headline pool-classified job-slot-minutes (MaxCount x 10)",
     "jobrequests": "recent enrichment and reconciliation; headline only when explicitly selected alone",
     "timeline": "authoritative headline only when coverage is complete",
     "billing_unsupported": "current-period cross-check only",
     "billing_resourceusage_capacity": "capacity snapshot, not minutes",
 }
 FAILURE_SOURCE_GROUPS = {
-    "analytics_parallel": {"analytics", "analytics_parallel"},
+    "analytics_parallel_capacity": {"analytics", "analytics_parallel_capacity"},
+    "analytics_taskagent_slots": {"analytics", "analytics_taskagent_slots"},
     "timeline": {"timeline", "timeline_builds", "timeline_queues", "timeline_record"},
     "jobrequests": {"jobrequests"},
 }
+# Sources that describe licensed capacity rather than consumed minutes. They must never
+# be selected as a headline source, and their records always carry 0 minutes and 0 jobs.
+CAPACITY_ONLY_SOURCES = {"analytics_parallel_capacity", "billing_resourceusage_capacity"}
 HOSTED_RUNNER_TYPES = {MICROSOFT_HOSTED, GITHUB_HOSTED}
 
 
@@ -136,6 +140,8 @@ def choose_primary_source(
         if source not in candidates:
             candidates.append(source)
     for source in candidates:
+        if source in CAPACITY_ONLY_SOURCES:
+            continue
         if (source in available or source in (covered_orgs_by_source or {})) and source_coverage(
             records, source, expected_orgs, failures, covered_orgs_by_source
         ).get("complete"):
@@ -282,10 +288,10 @@ def write_markdown_summary(
     expected_orgs: list[str] | None = None,
 ) -> None:
     """Write the customer-facing executive Markdown summary."""
-    analytics_hosted = _hosted_minutes(records, "analytics_parallel")
+    primary_hosted = _hosted_minutes(records, primary_source) if primary_source else 0.0
     billing_hosted = _hosted_minutes(records, "billing_unsupported")
     comparable_periods = _billing_periods_align(records, start, end)
-    variance = analytics_hosted - billing_hosted if analytics_hosted and billing_hosted and comparable_periods else None
+    variance = primary_hosted - billing_hosted if primary_hosted and billing_hosted and comparable_periods else None
     variance_pct = (variance / billing_hosted * 100.0) if variance is not None and billing_hosted else None
     primary_totals = aggregate([record for record in records if primary_source and record.source == primary_source], ["runner_type"])
     top_pools = sorted(summaries["by_org_pool"], key=lambda row: row.get("minutes", 0), reverse=True)[:15]
@@ -310,11 +316,13 @@ def write_markdown_summary(
                 ["org", "sources", "missing_entirely"],
             ),
         ])
-    if primary_source == "analytics_parallel":
+    if primary_source == "analytics_taskagent_slots":
         lines.extend([
-            "## Headline hosted/non-hosted minutes",
+            "## Headline job-slot-minutes by runner type",
             "",
-            "`analytics_parallel` is the default headline source, but it only distinguishes hosted vs non-hosted parallel-job minutes. Use `analytics_taskagent_slots`, `jobrequests`, or `timeline` for richer pool-type detail where coverage allows.",
+            "`analytics_taskagent_slots` is the default headline source. It reports pool-classified job-slot-minutes "
+            "aggregated as `MaxCount x 10`, which measures occupied concurrency rather than unique jobs, so the job "
+            "count is reported as 0. Use `timeline` for authoritative per-build minutes where coverage allows.",
             "",
         ])
     else:
@@ -339,20 +347,20 @@ def write_markdown_summary(
         "## Reconciliation",
         "",
     ])
-    if analytics_hosted and billing_hosted and comparable_periods:
+    if primary_hosted and billing_hosted and comparable_periods:
         lines.extend([
-            f"- Analytics hosted minutes (`analytics_parallel`): {analytics_hosted:.1f}",
+            f"- Hosted minutes from headline source (`{primary_source}`): {primary_hosted:.1f}",
             f"- Billing hosted minutes (`billing_unsupported`): {billing_hosted:.1f}",
             f"- Variance: {variance:.1f} minutes ({variance_pct:.2f}%).",
         ])
-    elif analytics_hosted and billing_hosted:
+    elif primary_hosted and billing_hosted:
         lines.extend([
-            f"- Analytics hosted minutes for requested range (`analytics_parallel`, {start} to {end}): {analytics_hosted:.1f}",
+            f"- Hosted minutes from headline source for requested range (`{primary_source}`, {start} to {end}): {primary_hosted:.1f}",
             f"- Billing hosted minutes (`billing_unsupported`, current billing period): {billing_hosted:.1f}",
             "- These periods are not directly comparable, so no variance percentage is calculated.",
         ])
     else:
-        lines.append("Analytics-vs-billing reconciliation was not available because one or both sources were not selected or returned no hosted minutes.")
+        lines.append("Headline-vs-billing reconciliation was not available because one or both sources were not selected or returned no hosted minutes.")
     if actions_rows:
         lines.extend([
             "",
@@ -367,7 +375,7 @@ def write_markdown_summary(
         "## Caveats and limitations",
         "",
         "- Azure DevOps has no native cross-org build-minute report because parallel jobs, not minutes, are the paid unit.",
-        "- `analytics_parallel` is a hosted-vs-non-hosted headline source, not the full six-way runner-type breakdown.",
+        "- `ParallelPipelineJobsSnapshot` (`analytics_parallel_capacity`) reports licensed parallel-job slots and the fixed monthly hosted free-minute grant. Those values are capacity constants re-sampled many times per day, so they are never summed into minutes.",
         "- `TaskAgentRequestSnapshots` must be aggregated as MaxCount × 10 minutes; naive duration sums double-count long jobs, and `MaxCount` is a max concurrent slot count, not a unique job count.",
         "- `jobrequests` is semi-documented/unsupported, has no server-side time filter, may be capped, and usually exposes only a recent retention window.",
         "- `billing_unsupported` is a UI data-provider endpoint for the current billing period only and may break without notice.",
